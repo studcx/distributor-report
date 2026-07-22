@@ -29,6 +29,23 @@ def get_category(product_code):
     return CATEGORY_MAP.get(prefix, "其他")
 
 
+def calc_accounting_month(sale_date_str):
+     if not sale_date_str or len(sale_date_str) < 7:
+         return sale_date_str
+     try:
+         year = int(sale_date_str[:4])
+         month = int(sale_date_str[5:7])
+         day = int(sale_date_str[8:10]) if len(sale_date_str) >= 10 else 1
+         if day >= 26:
+             month += 1
+             if month > 12:
+                 month = 1
+                 year += 1
+         return f"{year:04d}-{month:02d}"
+     except (ValueError, IndexError):
+         return sale_date_str
+
+
 def ensure_db(conn):
     cursor = conn.cursor()
     cursor.execute("""CREATE TABLE IF NOT EXISTS customer_mapping (
@@ -53,7 +70,7 @@ def ensure_db(conn):
         sale_date TEXT NOT NULL, invoice_no TEXT NOT NULL,
         cust_code TEXT, cust_name TEXT, product_code TEXT,
         category TEXT, amount REAL DEFAULT 0, distributor TEXT,
-        input_by TEXT, batch_id INTEGER,
+        input_by TEXT, accounting_month TEXT, batch_id INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
     cursor.execute("""CREATE TABLE IF NOT EXISTS import_batches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +89,18 @@ def ensure_db(conn):
 def _ensure_v4_tables(conn):
     cursor = conn.cursor()
     cur_check = conn.cursor()
+    # Migrate: add accounting_month column if not exists
+    cur_check.execute("PRAGMA table_info(sales_records)")
+    col_names = [r[1] for r in cur_check.fetchall()]
+    if "accounting_month" not in col_names:
+        cursor.execute("ALTER TABLE sales_records ADD COLUMN accounting_month TEXT")
+        # Backfill existing records with natural month as fallback
+        rows = cursor.execute("SELECT id, sale_date FROM sales_records WHERE accounting_month IS NULL AND sale_date IS NOT NULL").fetchall()
+        for rid, sd in rows:
+            am = calc_accounting_month(sd)
+            cursor.execute("UPDATE sales_records SET accounting_month = ? WHERE id = ?", (am, rid))
+        conn.commit()
+    cur_check2 = conn.cursor()
     cur_check.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='DIST_DISCOUNTS'")
     if not cur_check.fetchone():
         cur_check.execute("""CREATE TABLE DIST_DISCOUNTS (
@@ -125,10 +154,11 @@ def insert_sales_records(records_list, input_by, batch_info):
         if cursor.fetchone():
             skipped_count += 1
             continue
-        cursor.execute("INSERT INTO sales_records (sale_date, invoice_no, cust_code, cust_name, product_code, category, amount, distributor, input_by, batch_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        acct_month = calc_accounting_month(sale_date)
+        cursor.execute("INSERT INTO sales_records (sale_date, invoice_no, cust_code, cust_name, product_code, category, amount, distributor, input_by, accounting_month, batch_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        (sale_date, invoice_no, rec.get("cust_code", ""), rec.get("cust_name", ""),
                         rec.get("product_code", ""), rec.get("category", "其他"),
-                        rec.get("amount", 0.0), rec.get("distributor", ""), input_by, batch_id))
+                        rec.get("amount", 0.0), rec.get("distributor", ""), input_by, acct_month, batch_id))
         new_count += 1
     if batch_id:
         cursor.execute("UPDATE import_batches SET new_records = ?, skipped_duplicates = ? WHERE id = ?", (new_count, skipped_count, batch_id))
@@ -139,7 +169,7 @@ def insert_sales_records(records_list, input_by, batch_info):
 
 def get_sales_by_month(conn, month_key):
     cursor = conn.cursor()
-    cursor.execute("SELECT sale_date, invoice_no, cust_code, cust_name, product_code, category, amount, distributor, input_by FROM sales_records WHERE sale_date LIKE ? ORDER BY sale_date, invoice_no", (month_key + "%",))
+    cursor.execute("SELECT sale_date, invoice_no, cust_code, cust_name, product_code, category, amount, distributor, input_by FROM sales_records WHERE accounting_month = ? ORDER BY sale_date, invoice_no", (month_key,))
     rows = cursor.fetchall()
     result = []
     for r in rows:
@@ -150,14 +180,14 @@ def get_sales_by_month(conn, month_key):
 
 def get_available_months(conn):
     cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT substr(sale_date, 1, 7) as month_key FROM sales_records WHERE sale_date IS NOT NULL AND sale_date != '' GROUP BY month_key ORDER BY month_key DESC")
+    cursor.execute("SELECT DISTINCT accounting_month as month_key FROM sales_records WHERE accounting_month IS NOT NULL AND accounting_month != '' GROUP BY month_key ORDER BY month_key DESC")
     months = [r[0] for r in cursor.fetchall()]
     return months
 
 
 def delete_month_data(conn, month_key, input_by):
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM sales_records WHERE sale_date LIKE ?", (month_key + "%",))
+    cursor.execute("DELETE FROM sales_records WHERE accounting_month = ?", (month_key,))
     deleted = cursor.rowcount
     conn.commit()
     return deleted
@@ -171,25 +201,25 @@ def get_recent_imports(conn, limit=50):
 
 def get_daily_trend(conn, month_key):
     cursor = conn.cursor()
-    cursor.execute("SELECT substr(sale_date, 1, 10) as day, SUM(amount) as total FROM sales_records WHERE sale_date LIKE ? GROUP BY day ORDER BY day", (month_key + "%",))
+    cursor.execute("SELECT substr(sale_date, 1, 10) as day, SUM(amount) as total FROM sales_records WHERE accounting_month = ? GROUP BY day ORDER BY day", (month_key,))
     return cursor.fetchall()
 
 
 def get_distributor_ranking(conn, month_key):
     cursor = conn.cursor()
-    cursor.execute("SELECT distributor, COUNT(*) as cnt, SUM(amount) as total FROM sales_records WHERE sale_date LIKE ? AND distributor IS NOT NULL AND distributor != '' GROUP BY distributor ORDER BY total DESC", (month_key + "%",))
+    cursor.execute("SELECT distributor, COUNT(*) as cnt, SUM(amount) as total FROM sales_records WHERE accounting_month = ? AND distributor IS NOT NULL AND distributor != '' GROUP BY distributor ORDER BY total DESC", (month_key,))
     return cursor.fetchall()
 
 
 def get_category_breakdown(conn, month_key):
     cursor = conn.cursor()
-    cursor.execute("SELECT category, SUM(amount) as total FROM sales_records WHERE sale_date LIKE ? GROUP BY category ORDER BY total DESC", (month_key + "%",))
+    cursor.execute("SELECT category, SUM(amount) as total FROM sales_records WHERE accounting_month = ? GROUP BY category ORDER BY total DESC", (month_key,))
     return cursor.fetchall()
 
 
 def get_overview_stats(conn, month_key):
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*), COALESCE(SUM(amount),0), COUNT(DISTINCT invoice_no), COUNT(DISTINCT distributor) FROM sales_records WHERE sale_date LIKE ?", (month_key + "%",))
+    cursor.execute("SELECT COUNT(*), COALESCE(SUM(amount),0), COUNT(DISTINCT invoice_no), COUNT(DISTINCT distributor) FROM sales_records WHERE accounting_month = ?", (month_key,))
     row = cursor.fetchone()
     return {"total_lines": row[0], "total_amount": row[1], "invoice_count": row[2], "distributor_count": row[3]}
 

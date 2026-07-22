@@ -347,7 +347,7 @@ def render_data_management():
 
        try:
            cur = conn.cursor()
-           cur.execute("SELECT sale_date, invoice_no, cust_code, cust_name, product_code, category, amount, distributor, input_by, created_at FROM sales_records WHERE sale_date LIKE ? ORDER BY sale_date, invoice_no", (selected + "%",))
+           cur.execute("SELECT sale_date, invoice_no, cust_code, cust_name, product_code, category, amount, distributor, input_by, created_at FROM sales_records WHERE accounting_month = ? ORDER BY sale_date, invoice_no", (selected,))
            rows = cur.fetchall()
        except Exception as e:
            st.error(f"查詢失敗：{e}")
@@ -594,8 +594,8 @@ def render_statement_view():
         selected_month = st.selectbox("選擇月份", available_months, key="stmt_month_select")
     try:
         cursor = conn.cursor()
-        sql_distinct = "SELECT DISTINCT distributor FROM sales_records WHERE sale_date LIKE ? AND distributor IS NOT NULL AND distributor != '' GROUP BY distributor ORDER BY distributor"
-        cursor.execute(sql_distinct, (selected_month + "%",))
+        sql_distinct = "SELECT DISTINCT distributor FROM sales_records WHERE accounting_month = ? AND distributor IS NOT NULL AND distributor != '' GROUP BY distributor ORDER BY distributor"
+        cursor.execute(sql_distinct, (selected_month,))
         active_dists = [r[0] for r in cursor.fetchall()]
     except Exception:
         active_dists = []
@@ -610,8 +610,8 @@ def render_statement_view():
     # Fetch records for this distributor and month
     try:
         cursor = conn.cursor()
-        sql_records = "SELECT sale_date, invoice_no, cust_name, product_code, category, amount FROM sales_records WHERE sale_date LIKE ? AND distributor = ? ORDER BY sale_date, invoice_no"
-        cursor.execute(sql_records, (selected_month + "%", selected_dist))
+        sql_records = "SELECT sale_date, invoice_no, cust_name, product_code, category, amount FROM sales_records WHERE accounting_month = ? AND distributor = ? ORDER BY sale_date, invoice_no"
+        cursor.execute(sql_records, (selected_month, selected_dist))
         records = cursor.fetchall()
     except Exception as e:
         st.error(f"查詢失敗：{e}")
