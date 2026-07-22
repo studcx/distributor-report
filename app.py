@@ -30,6 +30,40 @@ import pandas as pd
 from collections import defaultdict
 
 
+
+
+def _flatten_for_storage(inv_records):
+    """Convert aggregated invoice records to flat list for storage."""
+    flat = []
+    for inv_no, record in inv_records.items():
+        cats = record.get("cats", {})
+        if isinstance(cats, dict):
+            for cat, amt in cats.items():
+                flat.append({
+                    "date": record.get("date", ""),
+                    "invoice_no": inv_no,
+                    "cust_code": record.get("cust_code", ""),
+                    "cust_name": record.get("cust_name", ""),
+                    "product_code": "",
+                    "category": cat if cat else "其他",
+                    "amount": amt if amt else 0.0,
+                    "distributor": record.get("distributor", None),
+                })
+        else:
+            flat.append({
+                "date": record.get("date", ""),
+                "invoice_no": inv_no,
+                "cust_code": record.get("cust_code", ""),
+                "cust_name": record.get("cust_name", ""),
+                "product_code": "",
+                "category": "其他",
+                "amount": 0.0,
+                "distributor": record.get("distributor", None),
+            })
+    return flat
+
+
+
 def init_page():
     """設定頁面配置與會話狀態預設值。"""
     st.set_page_config(page_title=PAGE_TITLE, layout="wide", initial_sidebar_state="expanded")
@@ -136,7 +170,7 @@ def render_home():
                      inv_records, _unmatched, _total, _dates = parse_erp_paste(paste_text, st.session_state.code_to_dist)
                  else:
                      inv_records, _unmatched, _total, _dates = parse_erp_excel(uploaded_file, st.session_state.code_to_dist)
-                 st.session_state["parsed_data"] = list(inv_records.values())
+                 st.session_state["parsed_data"] = _flatten_for_storage(inv_records)
                  st.rerun()
              except Exception as e:
                  st.error(f"❌ 解析失敗：{e}")
@@ -147,7 +181,7 @@ def render_home():
                  if save_clicked:
                      try:
                          conn = get_db()
-                         result = insert_sales_records(conn, parsed, "admin")
+                         result = insert_sales_records(parsed, "admin", {})
                          conn.commit()
                          conn.close()
                          st.session_state["last_result"] = result
@@ -181,7 +215,7 @@ def render_home():
              # 明細表格
              rows = []
              for r in parsed:
-                 rows.append({"日期": r.get("date",""), "發票號碼": r.get("invoice_no",""),
+                 rows.append({"日期": str(r.get("date","")), "發票號碼": r.get("invoice_no",""),
                      "客戶代號": r.get("cust_code",""), "產品代碼": r.get("product_code",""),
                      "類別": r.get("category",""), "金額": r.get("amount",0.0),
                      "經銷商": r.get("distributor","")})

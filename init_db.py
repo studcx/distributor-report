@@ -114,19 +114,19 @@ def insert_sales_records(records_list, input_by, batch_info):
     new_count = 0
     skipped_count = 0
     for rec in records_list:
-        inv_no = rec.get("inv_no", "") or ""
+        invoice_no = rec.get("invoice_no", "") or ""
         d_val = rec.get("date")
         if d_val and isinstance(d_val, (datetime, date)):
             sale_date = d_val.strftime("%Y-%m-%d")
         else:
             sale_date = str(d_val) if d_val else now_str[:10]
-        cursor.execute("SELECT id FROM sales_records WHERE invoice_no = ? AND cust_code = ? AND product_code = ?",
-                       (inv_no, rec.get("cust_code", ""), rec.get("product_code", "")))
+        cursor.execute("SELECT id FROM sales_records WHERE invoice_no = ? AND cust_code = ? AND category = ?",
+                       (invoice_no, rec.get("cust_code", ""), rec.get("category", "")))
         if cursor.fetchone():
             skipped_count += 1
             continue
         cursor.execute("INSERT INTO sales_records (sale_date, invoice_no, cust_code, cust_name, product_code, category, amount, distributor, input_by, batch_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                       (sale_date, inv_no, rec.get("cust_code", ""), rec.get("cust_name", ""),
+                       (sale_date, invoice_no, rec.get("cust_code", ""), rec.get("cust_name", ""),
                         rec.get("product_code", ""), rec.get("category", "其他"),
                         rec.get("amount", 0.0), rec.get("distributor", ""), input_by, batch_id))
         new_count += 1
