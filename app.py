@@ -127,7 +127,6 @@ def render_sidebar():
         st.divider()
         st.caption(f"v4.1 | {datetime.now():%Y-%m-%d}")
 
-
 def render_home():
     """首頁：ERP 資料輸入與預覽。"""
     st.markdown(styles.header_html("資料輸入", "貼上或上傳 ERP 銷售日報資料"), unsafe_allow_html=True)
@@ -141,57 +140,23 @@ def render_home():
     with col_input:
         tab_paste, tab_upload = st.tabs(["貼上資料（建議）", "上傳 Excel"])
 
-        def _on_paste_submit():
-            """Cmd+Enter 觸發：自動解析並預覽。"""
-            txt = st.session_state.get("erp_paste_text", "")
-            if txt and txt.strip():
-                try:
-                    inv_records, _unmatched, _total, _dates = parse_erp_paste(txt, st.session_state.code_to_dist)
-                    st.session_state["parsed_data"] = _flatten_for_storage(inv_records)
-                    st.session_state["parse_source"] = "貼上"
-                except Exception as e:
-                    st.session_state["parse_error"] = f"❌ 解析失敗：{e}"
-                    st.session_state["parsed_data"] = None
-
-        paste_text = st.text_area(
-            "請在此貼上 ERP 資料：", height=250,
-            placeholder="從 ERP 匯出後全選複製 (Cmd+A)，貼到這裡，然後按 Cmd+Enter...",
-            key="erp_paste_text",
-            label_visibility="collapsed",
-            on_submit=_on_paste_submit,
-        )
-
-        error_msg = st.session_state.get("parse_error")
-        if error_msg:
-            st.error(error_msg)
-            st.session_state.pop("parse_error", None)
-
-        # 上傳 Excel tab
-        with tab_upload:
-            uploaded_file = st.file_uploader("選擇 ERP 匯出的 Excel 檔案", type=["xlsx"], key="erp_upload")
-            if uploaded_file is not None:
-                st.success(f"✅ 已選取：`{uploaded_file.name}`")
-
-                col_btn_u1, col_btn_u2 = st.columns([3, 1])
-                parsed = st.session_state.get('parsed_data')
-                with col_btn_u1:
-                    if st.button("🔍 預覽資料", use_container_width=True, key="upload_preview_btn"):
-                        try:
-                            inv_records, _unmatched, _total, _dates = parse_erp_excel(uploaded_file, st.session_state.code_to_dist)
-                            st.session_state["parsed_data"] = _flatten_for_storage(inv_records)
-                            st.session_state["parse_source"] = "上傳"
-                        except Exception as e:
-                            st.error(f"❌ 解析失敗：{e}")
-                with col_btn_u2:
-                    if st.button("🗑️", use_container_width=True, key="upload_clear_btn"):
-                        st.session_state.pop("parsed_data", None)
-                        st.rerun()
-
-        # 貼上頁面的操作按鈕
+         # === 貼上資料區 ===
         with tab_paste:
+            st.caption("從 ERP 匯出後全選複製 (Cmd+A)，貼到下方：")
+            paste_text = st.text_area(
+                "請在此貼上 ERP 資料：", height=250,
+                placeholder="日期[TAB]發票號碼[TAB]客戶代號...",
+                key="erp_paste_text")
+
+             # 顯示上次儲存結果
+            if st.session_state.get("last_result"):
+                lr = st.session_state["last_result"]
+                st.success(f"✅ 寫入完成！新增 {lr['new']} 筆，跳過重複 {lr['skipped']} 筆。")
+                st.session_state.pop("last_result", None)
+
             parsed = st.session_state.get('parsed_data')
             has_text = (paste_text is not None and paste_text.strip())
-            col_btn1, col_btn2, col_btn3 = st.columns([3, 1, 1])
+            col_btn1, col_btn2 = st.columns([3, 1])
 
             if parsed is not None:
                 with col_btn1:
@@ -203,17 +168,12 @@ def render_home():
                             conn.close()
                             st.session_state["last_result"] = result
                             st.session_state.pop("parsed_data", None)
-                            st.session_state.pop("parse_source", None)
+                            st.rerun()
                         except Exception as e:
                             st.error(f"❌ 儲存失敗：{e}")
 
                 with col_btn2:
                     if st.button("🔄 重貼", use_container_width=True, key="reinput_btn"):
-                        st.session_state.pop("parsed_data", None)
-                        st.rerun()
-
-                with col_btn3:
-                    if st.button("❌ 取消", use_container_width=True, key="cancel_preview_btn"):
                         st.session_state.pop("parsed_data", None)
                         st.rerun()
             else:
@@ -222,7 +182,7 @@ def render_home():
                         try:
                             inv_records, _unmatched, _total, _dates = parse_erp_paste(paste_text, st.session_state.code_to_dist)
                             st.session_state["parsed_data"] = _flatten_for_storage(inv_records)
-                            st.session_state["parse_source"] = "貼上"
+                            st.rerun()
                         except Exception as e:
                             st.error(f"❌ 解析失敗：{e}")
 
@@ -231,21 +191,41 @@ def render_home():
                         st.session_state.pop("parsed_data", None)
                         st.rerun()
 
-    # === 右側預覽區域 ===
+         # === 上傳 Excel 區 ===
+        with tab_upload:
+            uploaded_file = st.file_uploader("選擇 ERP 匯出的 Excel 檔案", type=["xlsx"], key="erp_upload")
+            if uploaded_file is not None:
+                st.success(f"✅ 已選取：`{uploaded_file.name}`")
+
+                col_btn_u1, col_btn_u2 = st.columns([3, 1])
+                with col_btn_u1:
+                    if st.button("🔍 預覽資料", use_container_width=True, key="upload_preview_btn"):
+                        try:
+                            inv_records, _unmatched, _total, _dates = parse_erp_excel(uploaded_file, st.session_state.code_to_dist)
+                            st.session_state["parsed_data"] = _flatten_for_storage(inv_records)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ 解析失敗：{e}")
+                with col_btn_u2:
+                    if st.button("🗑️", use_container_width=True, key="upload_clear_btn"):
+                        st.session_state.pop("parsed_data", None)
+                        st.rerun()
+
+     # === 右側預覽區域 ===
     with col_preview:
         parsed = st.session_state.get('parsed_data')
         if not parsed:
-            st.info("👈 貼上資料後按 **Cmd+Enter** 即可自動預覽。")
+            st.info("👈 貼上資料後點擊「預覽資料」查看解析結果。")
         else:
-            source_label = st.session_state.get("parse_source", "")
             st.subheader(f"📊 預覽結果：共 {len(parsed)} 筆記錄")
 
-            # 摘要統計卡片
+             # 摘要統計卡片
             dists = set()
             total_amt = 0.0
             for r in parsed:
                 d = r.get("distributor", "")
-                if d: dists.add(d)
+                if d:
+                    dists.add(d)
                 total_amt += r.get("amount", 0.0) or 0.0
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -255,7 +235,7 @@ def render_home():
             with c3:
                 st.metric("經銷商數", f"{len(dists)}")
 
-            # 明細表格
+             # 明細表格
             rows = []
             for r in parsed:
                 rows.append({"日期": str(r.get("date","")), "發票號碼": r.get("invoice_no",""),
@@ -266,13 +246,6 @@ def render_home():
             if "金額" in df.columns:
                 df["金額"] = df["金額"].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int,float)) else "")
             st.dataframe(df, use_container_width=True, hide_index=True, height=450)
-
-        # 顯示上次儲存結果
-        last_result = st.session_state.get("last_result")
-        if last_result:
-            st.success(f"✅ 寫入完成！新增 {last_result['new']} 筆，跳過重複 {last_result['skipped']} 筆。")
-            st.session_state.pop("last_result", None)
-
 
 def render_dashboard():
       """儀表板：銷售分析圖表。"""
