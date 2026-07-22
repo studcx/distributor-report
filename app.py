@@ -133,10 +133,10 @@ def render_home():
          if preview_clicked and parsed is None:
              try:
                  if paste_text and paste_text.strip():
-                     records = parse_erp_paste(paste_text, st.session_state.code_to_dist)
+                     inv_records, _unmatched, _total, _dates = parse_erp_paste(paste_text, st.session_state.code_to_dist)
                  else:
-                     records = parse_erp_excel(uploaded_file, st.session_state.code_to_dist)
-                 st.session_state["parsed_data"] = records
+                     inv_records, _unmatched, _total, _dates = parse_erp_excel(uploaded_file, st.session_state.code_to_dist)
+                 st.session_state["parsed_data"] = list(inv_records.values())
                  st.rerun()
              except Exception as e:
                  st.error(f"❌ 解析失敗：{e}")
@@ -152,7 +152,7 @@ def render_home():
                          conn.close()
                          st.session_state["last_result"] = result
                          del st.session_state["parsed_data"]
-                         st.success(f"✅ 儲存成功！新增 {result['new_records']} 筆，跳過重複 {result['skipped_duplicates']} 筆。")
+                         st.success(f"✅ 儲存成功！新增 {result['new']} 筆，跳過重複 {result['skipped']} 筆。")
                          st.rerun()
                      except Exception as e:
                          st.error(f"❌ 儲存失敗：{e}")
