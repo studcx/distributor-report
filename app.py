@@ -130,7 +130,7 @@ def render_sidebar():
             st.markdown("5. **報表匯出** \u2014 選擇月份，產生對帳單 Excel")
             st.markdown("6. **設定** \u2014 管理經銷商對照資料")
         st.divider()
-        st.caption(f"v4.3 | {datetime.now():%Y-%m-%d}")
+        st.caption(f"v4.1 | {datetime.now():%Y-%m-%d}")
 
 def render_home():
 
