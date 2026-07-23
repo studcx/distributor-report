@@ -311,6 +311,169 @@ def _apply_discount(amount, category, distributor, rates_map):
     return round(amount * rate)
 
 
+def get_dashboard_data(conn, month_key):
+    """Unified dashboard data: returns brand AND actual prices for all charts."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT sale_date, invoice_no, distributor, category, SUM(amount) as total FROM sales_records WHERE accounting_month = ? GROUP BY sale_date, invoice_no, distributor, category ORDER BY sale_date", (month_key,))
+    raw_rows = cursor.fetchall()
+
+    # Load discount rates
+    rates_map = _get_discount_rates_dict(conn)
+
+    # === 每日銷售趨勢：每個日期同時計算牌價與實價 ===
+    daily_agg = {}
+    for row in raw_rows:
+        day = str(row[0])[:10] if row[0] else ""
+        cat = row[3] or "其他"
+        amt = row[4] or 0.0
+        dist = row[2] or ""
+        if not day:
+            continue
+        if day not in daily_agg:
+            daily_agg[day] = {"brand": 0.0, "actual": 0.0}
+        daily_agg[day]["brand"] += amt
+        daily_agg[day]["actual"] += _apply_discount(amt, cat, dist, rates_map)
+
+    daily_data = []
+    for day in sorted(daily_agg.keys()):
+        daily_data.append({
+            "date": day,
+            "brand": round(daily_agg[day]["brand"]),
+            "actual": round(daily_agg[day]["actual"]),
+        })
+
+    # === 經銷商排名：同時計算牌價與實價，使用銷貨單張數 ===
+    dist_agg = {}
+    for row in raw_rows:
+        dn = row[2] or ""
+        cat = row[3] or "其他"
+        amt = row[4] or 0.0
+        inv_no = row[1] or ""
+        if not dn:
+            continue
+        if dn not in dist_agg:
+            dist_agg[dn] = {"brand": 0.0, "actual": 0.0, "invoices": set()}
+        dist_agg[dn]["brand"] += amt
+        dist_agg[dn]["actual"] += _apply_discount(amt, cat, dn, rates_map)
+        dist_agg[dn]["invoices"].add(inv_no)
+
+    dist_data = []
+    for dn, info in sorted(dist_agg.items(), key=lambda x: x[1]["brand"], reverse=True):
+        dist_data.append({
+            "distributor": dn,
+            "brand": round(info["brand"]),
+            "actual": round(info["actual"]),
+            "invoice_count": len(info["invoices"]),
+        })
+
+    # === 產品類別佔比：同時計算牌價與實價 ===
+    cat_agg = {}
+    for row in raw_rows:
+        cat = row[3] or "其他"
+        amt = row[4] or 0.0
+        dist = row[2] or ""
+        if cat not in cat_agg:
+            cat_agg[cat] = {"brand": 0.0, "actual": 0.0}
+        cat_agg[cat]["brand"] += amt
+        cat_agg[cat]["actual"] += _apply_discount(amt, cat, dist, rates_map)
+
+    cat_data = []
+    for cat in ["單斤", "複斤", "單濃", "複濃", "O.T.C.", "其他"]:
+        if cat in cat_agg:
+            cat_data.append({
+                "category": cat,
+                "brand": round(cat_agg[cat]["brand"]),
+                "actual": round(cat_agg[cat]["actual"]),
+            })
+
+    # === 總覽統計 ===
+    total_brand = sum(r["brand"] for r in dist_data) if dist_data else 0
+    total_actual = sum(r["actual"] for r in dist_data) if dist_data else 0
+    cursor.execute("SELECT COUNT(*), COUNT(DISTINCT invoice_no) FROM sales_records WHERE accounting_month = ?", (month_key,))
+    row_count = cursor.fetchone()
+
+    stats = {
+        "total_lines": row_count[0] if row_count else 0,
+        "total_brand": round(total_brand),
+        "total_actual": round(total_actual),
+        "invoice_count": row_count[1] if row_count else 0,
+        "distributor_count": len(dist_data),
+    }
+
+    return {
+        "daily": daily_data,
+        "distributors": dist_data,
+        "categories": cat_data,
+        "stats": stats,
+    }
+
+
+def import_from_excel(file_path):
+    wb = openpyxl.load_workbook(file_path)
+    conn = sqlite3.connect(DB_PATH)
+    ensure_db(conn)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM customer_mapping")
+    cursor.execute("DELETE FROM distributor_info")
+    ws_cust = wb["客戶對照表"]
+    cust_count = 0
+    for row in ws_cust.iter_rows(min_row=2, max_col=5):
+        code = str(row[0].value).strip() if row[0].value else ""
+        if not code: continue
+        short_name = str(row[1].value).strip() if row[1].value else ""
+        full_name = str(row[2].value).strip() if row[2].value else ""
+        collector_code = str(row[3].value).strip() if row[3].value else ""
+        collector_name_raw = str(row[4].value).strip() if row[4].value else ""
+        if not collector_name_raw or collector_name_raw == "#N/A":
+            dist_name = MANUAL_CODE_MAPPING.get(code)
+            if not dist_name: continue
+        else:
+            dist_name = NAME_OVERRIDE.get(collector_name_raw, collector_name_raw)
+        cursor.execute("INSERT OR REPLACE INTO customer_mapping (cust_code, cust_short_name, cust_full_name, collector_code, collector_name, distributor_name) VALUES (?, ?, ?, ?, ?, ?)",
+              (code, short_name, full_name, collector_code, collector_name_raw, dist_name))
+        cust_count += 1
+    ws_disc = wb["經銷商折數基準表"]
+    dist_count = 0
+    for row in ws_disc.iter_rows(min_row=2, max_col=8):
+        std_name_raw = row[0].value
+        if not std_name_raw: continue
+        std_name = str(std_name_raw).strip()
+        sheet_name = str(row[1].value) if row[1].value is not None else std_name
+        company_full = str(row[2].value).strip() if row[2].value else std_name
+        cursor.execute("INSERT OR REPLACE INTO distributor_info (std_name, sheet_name, company_full, rate_dan_jin, rate_fu_jin, rate_dan_nong, rate_fu_nong, rate_otc) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              (std_name, sheet_name, company_full, safe_float(row[3].value), safe_float(row[4].value),
+               safe_float(row[5].value), safe_float(row[6].value), safe_float(row[7].value)))
+        dist_count += 1
+    cursor.execute("INSERT INTO import_log (source_file, action, records_cust, records_dist, note) VALUES (?, 'import', ?, ?, ?)",
+          (file_path, cust_count, dist_count, f"Import from {os.path.basename(file_path)}"))
+    conn.commit()
+
+def _get_discount_rates_dict(conn):
+    """Return dict of {distributor_name: {category: rate}} for actual price calculation."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT std_name, rate_dan_jin, rate_fu_jin, rate_dan_nong, rate_fu_nong, rate_otc FROM distributor_info")
+    rates_map = {}
+    for row in cursor.fetchall():
+        dn = row[0]
+        rates_map[dn] = {
+            "單斤": row[1] if row[1] is not None else 0.8,
+            "複斤": row[2] if row[2] is not None else 0.5,
+            "單濃": row[3] if row[3] is not None else 0.5,
+            "複濃": row[4] if row[4] is not None else 0.45,
+            "O.T.C.": row[5] if row[5] is not None else 0.5,
+        }
+    return rates_map
+
+
+def _apply_discount(amount, category, distributor, rates_map):
+    """Apply discount rate for a single record based on its category and distributor."""
+    rmx = rates_map.get(distributor, {})
+    rate = rmx.get(category, 1.0)
+    if category == "其他":
+        return amount  # no discount for 其他
+    return round(amount * rate)
+
+
 def get_daily_trend_with_price_mode(conn, month_key, price_mode):
     """Daily trend supporting both brand price and actual price."""
     cursor = conn.cursor()
