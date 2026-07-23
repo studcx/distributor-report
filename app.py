@@ -17,15 +17,11 @@ from processors import (
     process_monthly_file, most_common_date,
 )
 from init_db import (
-    _ensure_v4_tables, load_mappings_from_db, get_distributor_list,
+      _ensure_v4_tables, load_mappings_from_db, get_distributor_list,
     import_from_excel, ensure_db, ensure_user,
     insert_sales_records, get_sales_by_month, get_available_months,
-    delete_month_data, get_recent_imports,
-    get_daily_trend, get_distributor_ranking, get_category_breakdown,
-    get_overview_stats, get_category,
-    get_overview_stats_with_price_mode, get_daily_trend_with_price_mode,
-    get_distributor_ranking_with_price_mode, get_category_breakdown_with_price_mode,
-    get_distributor_note, save_distributor_note,
+    delete_month_data, get_recent_imports, get_dashboard_data,
+    get_category, get_distributor_note, save_distributor_note,
 )
 from styles import MAIN_CSS
 import styles
@@ -384,114 +380,166 @@ def render_home():
 
 
 
+
+
+
+
 def render_dashboard():
-      """儀表板：銷售分析圖表，支援牌價/實價切換。"""
-      st.markdown(styles.header_html("儀表板", "銷售趨勢與分析圖表"), unsafe_allow_html=True)
+    """儀表板：銷售分析圖表，同時顯示牌價與實價。"""
+    st.markdown(styles.header_html("儀表板", "銷售趨勢與分析圖表"), unsafe_allow_html=True)
+    
+    # 取得可用月份清單
+    try:
+        conn_tmp = get_db()
+        months = _filter_future_months(get_available_months(conn_tmp))
+        conn_tmp.close()
+    except Exception as e:
+        st.error(f"讀取月份清單失敗：{e}")
+        return
+    
+    if not months:
+        st.info("目前尚無資料。請先至「資料輸入」貼上 ERP 資料並儲存。")
+        return
+    
+    selected_month = st.selectbox("選擇月份：", options=months, index=0, key="dash_month_select")
+    
+    # 一次性查詢所有資料（同時包含牌價與實價）
+    try:
+        conn2 = get_db()
+        dashboard_data = get_dashboard_data(conn2, selected_month)
+        conn2.close()
+    except Exception as e:
+        st.error(f"讀取資料失敗：{e}")
+        import traceback; st.exception(e)
+        return
+    
+    daily_data = dashboard_data["daily"]
+    dist_data = dashboard_data["distributors"]
+    cat_data = dashboard_data["categories"]
+    stats = dashboard_data["stats"]
+    
+    # 統計卡片
+    c1, c2, c3, c4 = st.columns(4)
+    tl = stats.get("total_lines", 0)
+    tc = stats.get("invoice_count", 0)
+    tb = stats.get("total_brand", 0)
+    ta = stats.get("total_actual", 0)
+    with c1: st.metric("明細筆數", f"{tl:,}")
+    with c2: st.metric("銷貨單張數", f"{tc:,}")
+    with c3: st.metric("牌價總額", f"NT${tb:,.0f}")
+    with c4: st.metric("實價總額", f"NT${ta:,.0f}")
+    
+    # ====== 每日銷售趨勢：雙線圖 ======
+    st.subheader("每日銷售趨勢")
+    if daily_data:
+        import plotly.graph_objects as go
+        dates = [d["date"] for d in daily_data]
+        brand_vals = [d["brand"] for d in daily_data]
+        actual_vals = [d["actual"] for d in daily_data]
+    
+        fig1 = go.Figure()
+        fig1.add_trace(go.Scatter(x=dates, y=brand_vals, mode="lines+markers",
+            name='牌價', line=dict(color='#3b82f6', width=2.5), marker=dict(size=6)))
+        fig1.add_trace(go.Scatter(x=dates, y=actual_vals, mode="lines+markers",
+            name='實價', line=dict(color='#4a6741', width=2.5), marker=dict(size=6)))
+        fig1.update_layout(
+            yaxis_title="金額 (NT$)", xaxis_title=None,
+            height=380, showlegend=True, legend=dict(yanchor='top', y=0.95, xanchor='left', x=0.02),
+        )
+        st.plotly_chart(fig1, use_container_width=True)
+    
+        with st.expander('每日明細表格'):
+            rows = []
+            for d in daily_data:
+                rows.append({"日期": d["date"], "牌價": f'{d["brand"]:,.0f}', "實價": f'{d["actual"]:,.0f}'})
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.info(f"{selected_month} 尚無銷售資料。")
+    
+# ====== 經銷商銷售排名：水平柱狀圖（全部列出）======
+    st.subheader("經銷商銷售排名")
+    if dist_data:
+        import plotly.graph_objects as go
 
-             # 取得可用月份清單
-      try:
-          conn_tmp = get_db()
-          months = _filter_future_months(get_available_months(conn_tmp))
-          conn_tmp.close()
-      except Exception as e:
-          st.error(f"讀取月份清單失敗：{e}")
-          return
+             # 顯示全部經銷商，依牌價由大至小排列
+        sorted_dist = list(reversed(dist_data))
+        names = [d["distributor"] for d in sorted_dist]
+        brand_bars = [d["brand"] for d in sorted_dist]
+        actual_bars = [d["actual"] for d in sorted_dist]
 
-      if not months:
-          st.info("目前尚無資料。請先至「資料輸入」貼上 ERP 資料並儲存。")
-          return
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(
+             y=names, x=brand_bars, orientation='h',
+            customdata=[f"牌價: NT${b:,.0f}<br>實價: NT${a:,.0f}" for b, a in zip(brand_bars, actual_bars)],
+            hovertemplate='%{y}<br>%{customdata}<extra></extra>',
+            marker_color='#4a6741',
+           ))
+        fig2.update_layout(
+            yaxis_title=None, xaxis_title="銷售牌價 (NT$)",
+            height=max(300, len(sorted_dist)*28+60), showlegend=False,
+            margin=dict(l=90, r=10, t=20, b=40),
+            yaxis=dict(tickfont=dict(size=12)),
+           )
+        st.plotly_chart(fig2, use_container_width=True)
 
-             # 月份選擇與價格模式切換（同一列）
-      col_m, col_p = st.columns([2, 1])
-      with col_m:
-          selected_month = st.selectbox("選擇月份：", options=months, index=0, key="dash_month_select")
-      with col_p:
-          price_mode = st.radio("金額顯示模式：", options=["牌價", "實價"], index=0, horizontal=True, key="dash_price_mode")
+        with st.expander('完整排名表格'):
+            df_r = pd.DataFrame(dist_data)
+            df_r.insert(0, "排名", range(1, len(df_r)+1))
+            df_r["牌價"] = df_r["brand"].apply(lambda x: f"{x:,.0f}")
+            df_r["實價"] = df_r["actual"].apply(lambda x: f"{x:,.0f}")
+            df_r = df_r[["排名", "distributor", "牌價", "實價", "invoice_count"]]
+            df_r.columns = ["排名", "經銷商", "牌價", "實價", "銷貨單張數"]
+            st.dataframe(df_r, use_container_width=True, hide_index=True)
+    else:
+        st.info(f"{selected_month} 尚無經銷商資料。")
+    
+    # ====== 產品類別佔比：雙圓餅圖 ======
+    st.subheader("產品類別佔比分析")
+    if cat_data:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        colors_list = ["#4a6741", "#6b8f5e", "#8fb572", "#c5d9b3", "#ddd", "#eee"]
+    
+        total_brand_c = sum(d["brand"] for d in cat_data) or 1
+        total_actual_c = sum(d["actual"] for d in cat_data) or 1
+    
+        cats = [d["category"] for d in cat_data]
+        brand_vals = [d["brand"] for d in cat_data]
+        actual_vals = [d["actual"] for d in cat_data]
+    
+        fig3 = make_subplots(rows=1, cols=2,
+            subplot_titles=('牌價佔比', '實價佔比'),
+            specs=[[{'type':'pie'}, {'type':'pie'}]])
+    
+        fig3.add_trace(go.Pie(
+             labels=cats, values=brand_vals, hole=0.5,
+            marker_colors=colors_list[:len(cats)],
+            textinfo='percent+label', textposition='outside',
+        ), row=1, col=1)
+    
+        fig3.add_trace(go.Pie(
+             labels=cats, values=actual_vals, hole=0.5,
+            marker_colors=colors_list[:len(cats)],
+            textinfo='percent+label', textposition='outside',
+        ), row=1, col=2)
+    
+        fig3.update_layout(height=420, showlegend=True)
+        st.plotly_chart(fig3, use_container_width=True)
+    
+        with st.expander('類別明細表格'):
+            rows = []
+            for d in cat_data:
+                rows.append({
+                     "類別": d["category"],
+                     '牌價': f'{d["brand"]:,.0f}',
+                     '實價': f'{d["actual"]:,.0f}',
+                     '牌價佔比': f'{d["brand"]/total_brand_c*100:.1f}%',
+                     '實價佔比': f'{d["actual"]/total_actual_c*100:.1f}%',
+                 })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.info(f"{selected_month} 尚無產品類別資料。")
 
-             # 查詢統計資料（根據價格模式選擇不同函數）
-      try:
-          conn2 = get_db()
-          stats = get_overview_stats_with_price_mode(conn2, selected_month, price_mode)
-          daily_data = get_daily_trend_with_price_mode(conn2, selected_month, price_mode)
-          dist_data = get_distributor_ranking_with_price_mode(conn2, selected_month, price_mode)
-          cat_data = get_category_breakdown_with_price_mode(conn2, selected_month, price_mode)
-          conn2.close()
-      except Exception as e:
-          st.error(f"讀取資料失敗：{e}")
-          import traceback; st.exception(e)
-          return
-
-             # 統計卡片
-      c1, c2, c3, c4 = st.columns(4)
-      tl = stats.get("total_lines", 0) if stats else 0
-      tc = stats.get("invoice_count", 0) if stats else 0
-      ta = stats.get("total_amount", 0) if stats else 0
-      td = stats.get("distributor_count", 0) if stats else 0
-      with c1: st.metric('明細筆數', f'{tl:,}')
-      with c2: st.metric('發票張數', f'{tc}')
-      with c3: st.metric(f'銷售總額 ({price_mode})', f'NT${ta:,.0f}')
-      with c4: st.metric('經銷商數', f'{td}')
-
-      st.subheader("每日銷售趨勢")
-      if daily_data and len(daily_data) > 0:
-          import plotly.express as px
-          df_t = pd.DataFrame(daily_data, columns=["日期", "金額"])
-          df_t["日期"] = pd.to_datetime(df_t["日期"], errors="coerce")
-
-          fig1 = px.line(df_t, x="日期", y="金額", title=None, markers=True)
-          fig1.update_layout(yaxis_title=f"銷售{price_mode} (NT$)", height=350, xaxis_title=None)
-          fig1.update_xaxes(tickangle=-45, tickformat="%m/%d")
-          for date_val in df_t['日期']:
-              fig1.add_vline(x=date_val, line_dash='dot', line_color='grey', opacity=0.2)
-          st.plotly_chart(fig1, use_container_width=True)
-
-                       # 每日明細表格
-          with st.expander('每日明細表格'):
-              df_t_display = df_t.copy()
-              df_t_display["金額"] = df_t_display["金額"].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int,float)) and not pd.isna(x) else "")
-              st.dataframe(df_t_display, use_container_width=True, hide_index=True)
-      else:
-          st.info(f"{selected_month} 尚無銷售資料。")
-
-      st.subheader("經銷商銷售排名")
-      if dist_data and len(dist_data) > 0:
-          df_r = pd.DataFrame(dist_data, columns=["經銷商", "筆數", "金額"])
-          top_n = 15
-          if len(df_r) > top_n:
-              other_total = df_r.iloc[top_n:]["金額"].sum()
-              df_top = df_r.iloc[:top_n].copy()
-              df_top = pd.concat([df_top, pd.DataFrame([{"經銷商": "其他", "金額": other_total}])], ignore_index=True)
-          else:
-              df_top = df_r.copy()
-          fig2 = px.bar(df_top.sort_values("金額", ascending=True), y="經銷商", x="金額", color="金額", color_discrete_sequence=["#4a6741"], title=None)
-          fig2.update_layout(height=min(400, len(df_top)*35+60), showlegend=False, xaxis_title=f"銷售{price_mode} (NT$)")
-          st.plotly_chart(fig2, use_container_width=True)
-
-          with st.expander('完整排名表格'):
-              df_r = df_r.copy()
-              df_r.insert(0, "排名", range(1, len(df_r)+1))
-              df_r["金額"] = df_r["金額"].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int,float)) else "")
-              st.dataframe(df_r, use_container_width=True, hide_index=True)
-      else:
-          st.info(f"{selected_month} 尚無經銷商資料。")
-
-      st.subheader("產品類別佔比分析")
-      if cat_data and len(cat_data) > 0:
-          df_c = pd.DataFrame(cat_data, columns=["類別", "金額"])
-          colors_list = ["#4a6741", "#6b8f5e", "#8fb572", "#c5d9b3", "#ddd", "#eee"]
-          fig3 = px.pie(df_c, values="金額", names="類別", hole=0.5, color_discrete_sequence=colors_list, title=None)
-          fig3.update_traces(textposition="outside", textinfo="percent+label")
-          fig3.update_layout(height=400)
-          st.plotly_chart(fig3, use_container_width=True)
-
-          with st.expander('類別明細表格'):
-              total_amt_c = df_c["金額"].sum()
-              df_c_copy = df_c.copy()
-              df_c_copy["佔比"] = df_c_copy["金額"].apply(lambda x: f"{x/total_amt_c*100:.1f}%" if total_amt_c else "0%")
-              df_c_copy["金額"] = df_c_copy["金額"].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int,float)) else "")
-              st.dataframe(df_c_copy[["類別", "金額", "佔比"]], use_container_width=True, hide_index=True)
-      else:
-          st.info(f"{selected_month} 尚無產品類別資料。")
 
 
 def render_data_management():
@@ -1156,7 +1204,7 @@ def render_statement_view():
 
 
 
-     # Build detail_rows early (needed for PDF export)
+    # Build detail_rows early (needed for PDF export)
 
     detail_rows = []
 
@@ -1361,7 +1409,7 @@ def render_statement_view():
 
 
 
-     # === Detail table ===
+    # === Detail table ===
 
     st.subheader(f"明細列表（{len(inv_records)} 筆）")
 
@@ -1440,7 +1488,7 @@ def _render_summary_table(total_brand, total_actual, grand_brand, grand_actual, 
 
 
 def _render_detail_table(detail_rows, total_brand, grand_brand, cat_labels):
-     # Column headers including 備註
+    # Column headers including 備註
     all_cols = ["日期","銷貨單號","客戶名稱","單斤","複斤","單濃","複濃","O.T.C.","其他","備註","小計"]
     col_aligns = ["center","center","left","right","right","right","right","right","right","left","right"]
     col_widths = {"日期":"8%","銷貨單號":"10%","客戶名稱":"12%","單斤":"7%","複斤":"7%","單濃":"7%","複濃":"7%","O.T.C.":"7%","其他":"7%","備註":"14%","小計":"10%"}
@@ -1473,7 +1521,7 @@ def _render_detail_table(detail_rows, total_brand, grand_brand, cat_labels):
         d_row_html += "</tr>"
         d_body += d_row_html
 
-     # Total row with blank for 備註
+    # Total row with blank for 備註
     t_vals = ["", "", "合 計"] + [f"{total_brand[c]:,.0f}" for c in ["單斤","複斤","單濃","複濃","O.T.C."]] + [f"{total_brand['其他']:,.0f}", "", f"{grand_brand:,.0f}"]
 
     t_cells = ""
