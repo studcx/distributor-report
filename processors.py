@@ -108,11 +108,12 @@ def _parse_row_from_list(cells, code_to_dist):
          return None, d_val, False
      distributor = code_to_dist.get(cust_code)
      cust_name_raw = str(cells[ERP_COLUMN_DEF["cust_name"]]).strip() if len(cells) > ERP_COLUMN_DEF["cust_name"] and cells[ERP_COLUMN_DEF["cust_name"]] else cust_code
+     order_note = str(cells[ERP_COLUMN_DEF["order_note"]]).strip() if len(cells) > ERP_COLUMN_DEF["order_note"] and cells[ERP_COLUMN_DEF["order_note"]] else ""
      is_unmatched = (distributor is None)
-     return {"date": d_val, "inv_no": inv_no, "cust_code": cust_code, "cust_name": cust_name_raw, "product_code": product_code_raw, "amount": amount, "distributor": distributor}, d_val, is_unmatched
+     return {"date": d_val, "inv_no": inv_no, "cust_code": cust_code, "cust_name": cust_name_raw, "product_code": product_code_raw, "amount": amount, "distributor": distributor, "order_note": order_note}, d_val, is_unmatched
 
 def _build_invoice_records(rows_data, code_to_dist):
-     inv_records = defaultdict(lambda: {"date": None, "cust_name": "", "cust_code": "", "cats": defaultdict(float), "distributor": None})
+     inv_records = defaultdict(lambda: {"date": None, "cust_name": "", "cust_code": "", "order_note": "", "cats": defaultdict(float), "distributor": None})
      all_dates = []
      unmatched = []
      total_read = 0
@@ -131,6 +132,8 @@ def _build_invoice_records(rows_data, code_to_dist):
              r["cust_name"] = rec["cust_name"]
              r["cust_code"] = rec["cust_code"]
              r["distributor"] = rec["distributor"]
+             if not r["order_note"] and rec.get("order_note", ""):
+                 r["order_note"] = rec["order_note"]
          cat = get_category(rec["product_code"])
          r["cats"][cat] += rec["amount"]
      return dict(inv_records), unmatched, total_read, all_dates
